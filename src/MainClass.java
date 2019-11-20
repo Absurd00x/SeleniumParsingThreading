@@ -13,6 +13,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 
+import static java.lang.Integer.max;
+import static java.lang.Integer.min;
+
 public class MainClass {
     public final static String textsFilepath = "./jsons/jsonTexts.json";
     public final static String linksFilepath = "./jsons/jsonLinks.json";
@@ -20,6 +23,7 @@ public class MainClass {
     private final static String fourthThreadName = "FourthThread";
     private final static String[] jsonFiles = {textsFilepath, linksFilepath, picturesFilepath};
     private final static String[] threadNames = {"TextsFileThread", "LinksFileThread", "PicturesFileThread"};
+    public final static String lockFilePath = "./jsons/isBusy";
 
     private static FirefoxDriver initialize() {
         System.setProperty("webdriver.gecko.driver","./geckodriver");
@@ -49,7 +53,7 @@ public class MainClass {
             try {
                 if (reading)
                     System.out.printf("%s reads %s%n", getName(), filePath);
-                else {
+                else if (!container.isEmpty()) {
                     JSONParser parser = new JSONParser();
                     JSONArray array = (JSONArray) parser.parse(new FileReader(filePath));
 
@@ -88,7 +92,7 @@ public class MainClass {
         loginButton.click();
     }
 
-    private static void checkFiles() throws IOException {
+    private static void checkFilesExistence() throws IOException {
         if (Files.notExists(Path.of("./jsons")))
             new File("./jsons").mkdirs();
 
@@ -102,7 +106,7 @@ public class MainClass {
         for(int i = 0; i < iterations_number * 3; ++i) {
             for (int j = 0; j < 3; ++j) {
                 MyThread nextThread;
-                if (j == fourthThreadQueueIndex)
+                if (j == fourthThreadQueueIndex % 3)
                     nextThread = new MyThread(fourthThreadName, jsonFiles[j], true);
                 else
                     nextThread = new MyThread(threadNames[j], jsonFiles[j], false);
@@ -114,8 +118,31 @@ public class MainClass {
             schedule.get(i).add(new MyThread(threadNames[i], jsonFiles[i], false));
     }
 
+    private static void occupyFiles() throws IOException, InterruptedException {
+        // Checking if files are not occupied
+        boolean isOccupied = true;
+        while (isOccupied) {
+            FileReader fr = new FileReader(lockFilePath);
+            isOccupied = (fr.read() == '1');
+            fr.close();
+            if (isOccupied)
+                Thread.sleep(100);
+        }
+        FileWriter fr = new FileWriter(lockFilePath);
+        fr.write('1');
+        fr.close();
+    }
+
+    private static void freeFiles() throws IOException {
+        FileWriter fr = new FileWriter(lockFilePath);
+        fr.write('0');
+        fr.close();
+    }
+
     private static void parseFeed(FirefoxDriver driver) throws IOException, InterruptedException {
-        checkFiles();
+        checkFilesExistence();
+        occupyFiles();
+
         Set<String> postsIds = new HashSet<>();
 
         // Planning
@@ -125,8 +152,11 @@ public class MainClass {
 
         // Change this variable value to test the program.
         // -----------------------------------------------
-        int iterationsNumber = 3;
+        int iterationsNumber = 100;
         // -----------------------------------------------
+
+        // Vc can't handle more than 19 scrolls down
+        iterationsNumber = min(iterationsNumber, 19);
 
         planAhead(schedule, iterationsNumber);
 
@@ -134,7 +164,7 @@ public class MainClass {
         HashMap<String, JSONArray> links = new HashMap<>();
         HashMap<String, JSONArray> pictures = new HashMap<>();
 
-        for (int i = 0; i < iterationsNumber; ++i) {
+        for (int i = 1; i <= iterationsNumber; ++i) {
 
             List<WebElement> feedRows = driver.findElements(By.className("feed_row"));
 
@@ -142,7 +172,7 @@ public class MainClass {
                 boolean isPostPresent = post.findElements(By.className("post")).size() > 0;
                 if (isPostPresent) {
                     String id = post.findElement(By.className("post")).getAttribute("id");
-                    if (!postsIds.contains(id)) {
+                if (!postsIds.contains(id)) {
                         postsIds.add(id);
 
                         // texts
@@ -212,6 +242,12 @@ public class MainClass {
             }
             for (MyThread thread : startedThreads)
                 thread.join();
+            // Free files for some time for other processes
+            if (i % 5 == 0) {
+                freeFiles();
+                Thread.sleep(100);
+                occupyFiles();
+            }
         }
 
         // Writing iteration without fourth thread
@@ -224,6 +260,7 @@ public class MainClass {
         for (MyThread thread : startedThreads)
             thread.join();
 
+        freeFiles();
     }
 
     public static void main(String[] args) throws Exception {
