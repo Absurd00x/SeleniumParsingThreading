@@ -1,2 +1,2 @@
-# SeleniumThreadingDeamons
-University task by Sumkin
+# SeleniumParsingThreading
+University task from Sumkin (most of it)
