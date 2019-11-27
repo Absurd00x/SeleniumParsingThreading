@@ -8,22 +8,24 @@ import org.openqa.selenium.firefox.FirefoxDriver;
 import org.openqa.selenium.firefox.FirefoxOptions;
 
 import java.io.*;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 
-import static java.lang.Integer.max;
 import static java.lang.Integer.min;
 
 public class MainClass {
-    public final static String textsFilepath = "./jsons/jsonTexts.json";
-    public final static String linksFilepath = "./jsons/jsonLinks.json";
-    public final static String picturesFilepath = "./jsons/jsonPictures.json";
+    private final static String textsFilepath = "./jsons/jsonTexts.json";
+    private final static String linksFilepath = "./jsons/jsonLinks.json";
+    private final static String picturesFilepath = "./jsons/jsonPictures.json";
     private final static String fourthThreadName = "FourthThread";
     private final static String[] jsonFiles = {textsFilepath, linksFilepath, picturesFilepath};
     private final static String[] threadNames = {"TextsFileThread", "LinksFileThread", "PicturesFileThread"};
-    public final static String lockFilePath = "./jsons/isBusy";
+    private final static String lockFilePath = "./jsons/isBusy";
+    private final static String statisticsFilepath = "./jsons/statistics.txt";
 
     private static FirefoxDriver initialize() {
         System.setProperty("webdriver.gecko.driver","./geckodriver");
@@ -51,10 +53,36 @@ public class MainClass {
 
         public void run() {
             try {
-                if (reading)
+                ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
+                JSONParser parser = new JSONParser();
+
+                if (reading) {
+                    long startTime = threadMXBean.getCurrentThreadCpuTime();
+                    JSONArray array = (JSONArray) parser.parse(new FileReader(filePath));
+                    double executionTime = (threadMXBean.getCurrentThreadCpuTime() - startTime) / 1e6;
+                    int fileNumber = -1;
+                    for (int i = 0; i < 3; ++i)
+                        if (jsonFiles[i].equals(filePath))
+                            fileNumber = i;
+
+                    double[] time = new double[3];
+                    int[] count = new int[3];
+                    Scanner scanner = new Scanner(new File(statisticsFilepath));
+                    for (int i = 0; i < 3; ++i) {
+                        time[i] = scanner.nextDouble();
+                        count[i] = scanner.nextInt();
+                    }
+                    scanner.close();
+                    time[fileNumber] += executionTime;
+                    ++count[fileNumber];
+
+                    FileWriter fw = new FileWriter(statisticsFilepath);
+                    for (int i = 0; i < 3; ++i)
+                        fw.write(String.format("%.6f %d%n", time[i], count[i]));
+                    fw.close();
+
                     System.out.printf("%s reads %s%n", getName(), filePath);
-                else if (!container.isEmpty()) {
-                    JSONParser parser = new JSONParser();
+                } else if (!container.isEmpty()) {
                     JSONArray array = (JSONArray) parser.parse(new FileReader(filePath));
 
                     // Remove all duplicate news from parsed container
@@ -98,21 +126,54 @@ public class MainClass {
 
         for (String path : jsonFiles)
             if (Files.notExists(Path.of(path)))
-                Files.write(Paths.get(path), "".getBytes());
+                Files.write(Paths.get(path), "[]".getBytes());
+
+        if (Files.notExists(Path.of(statisticsFilepath)))
+            Files.write(Paths.get(statisticsFilepath), "0 0\n0 0\n0 0".getBytes());
     }
 
-    private static void planAhead(ArrayList<Queue<MyThread>> schedule, int iterations_number) {
-        int fourthThreadQueueIndex = 0;
-        for(int i = 0; i < iterations_number * 3; ++i) {
+    public static class ArrayIndexComparator implements Comparator<Integer> {
+        private final Double[] array;
+        public ArrayIndexComparator(Double[] array) {
+            this.array = array;
+        }
+
+        public Integer[] createIndexArray() {
+            Integer[] indexes = new Integer[array.length];
+            for (int i = 0; i < array.length; i++)
+                indexes[i] = i;
+            return indexes;
+        }
+
+        @Override
+        public int compare(Integer index1, Integer index2) {
+            return array[index1].compareTo(array[index2]);
+        }
+    }
+
+    private static void planAhead(ArrayList<Queue<MyThread>> schedule) throws FileNotFoundException {
+        Double[] estimatedExecutionTime = new Double[3];
+        Scanner scanner = new Scanner(new File(statisticsFilepath));
+        for (int i = 0; i < 3; ++i) {
+            double time = scanner.nextDouble();
+            int count = scanner.nextInt();
+            estimatedExecutionTime[i] = time / count;
+        }
+        scanner.close();
+
+        ArrayIndexComparator comparator = new ArrayIndexComparator(estimatedExecutionTime);
+        Integer[] indexes = comparator.createIndexArray();
+        Arrays.sort(indexes, comparator);
+
+        for(int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
                 MyThread nextThread;
-                if (j == fourthThreadQueueIndex % 3)
+                if (j == indexes[i])
                     nextThread = new MyThread(fourthThreadName, jsonFiles[j], true);
                 else
                     nextThread = new MyThread(threadNames[j], jsonFiles[j], false);
                 schedule.get(j).add(nextThread);
             }
-            ++fourthThreadQueueIndex;
         }
         for (int i = 0; i < 3; ++i)
             schedule.get(i).add(new MyThread(threadNames[i], jsonFiles[i], false));
@@ -152,19 +213,19 @@ public class MainClass {
 
         // Change this variable value to test the program.
         // -----------------------------------------------
-        int iterationsNumber = 100;
+        int iterationsNumber = 4;
         // -----------------------------------------------
 
-        // Vc can't handle more than 19 scrolls down
-        iterationsNumber = min(iterationsNumber, 19);
-
-        planAhead(schedule, iterationsNumber);
+        // Vc can't handle more than 18 scrolls down
+        iterationsNumber = min(iterationsNumber, 18);
 
         HashMap<String, String> texts = new HashMap<>();
         HashMap<String, JSONArray> links = new HashMap<>();
         HashMap<String, JSONArray> pictures = new HashMap<>();
 
         for (int i = 1; i <= iterationsNumber; ++i) {
+            if (schedule.get(0).isEmpty())
+                planAhead(schedule);
 
             List<WebElement> feedRows = driver.findElements(By.className("feed_row"));
 
@@ -212,9 +273,10 @@ public class MainClass {
             }
 
             // Internet is too slow
-            Thread.sleep(1000);
+            Thread.sleep(3000);
             WebElement showMoreButton = driver.findElement(By.id("show_more_link"));
-            showMoreButton.click();
+            if (showMoreButton.isDisplayed())
+                showMoreButton.click();
 
             // Executing planned actions
 
@@ -250,20 +312,30 @@ public class MainClass {
             }
         }
 
-        // Writing iteration without fourth thread
-        ArrayList<MyThread> startedThreads = new ArrayList<>();
-        for(int i = 0; i < 3; ++i) {
-            MyThread thread = schedule.get(i).peek();
-            thread.start();
-            startedThreads.add(thread);
+        // Finishing iterations
+        while (!schedule.get(0).isEmpty()) {
+            ArrayList<MyThread> startedThreads = new ArrayList<>();
+            for (int i = 0; i < 3; ++i) {
+                MyThread thread = schedule.get(i).peek();
+                thread.start();
+                startedThreads.add(thread);
+            }
+            for (MyThread thread : startedThreads)
+                thread.join();
         }
-        for (MyThread thread : startedThreads)
-            thread.join();
 
         freeFiles();
     }
 
     public static void main(String[] args) throws Exception {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                freeFiles();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }));
+
         FirefoxDriver driver = initialize();
 
         driver.get("https://vk.com");
