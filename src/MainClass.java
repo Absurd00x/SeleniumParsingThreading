@@ -38,53 +38,29 @@ public class MainClass {
 
         private String filePath;
         private boolean reading;
-        private HashMap<String, T> container;
+        private HashMap<String, T> container = new HashMap<>();
+        private double executionTime = 0;
 
         public MyThread(String ThreadName, String filePath, boolean reading) {
             super(ThreadName);
             this.filePath = filePath;
             this.reading = reading;
-            container = new HashMap<>();
         }
 
         public void setContainer(HashMap<String, T> container) {
             this.container = container;
         }
+        public double getExecutionTime() {return executionTime;}
 
         public void run() {
+            ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
+            long startTime = threadMXBean.getCurrentThreadCpuTime();
             try {
-                ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
                 JSONParser parser = new JSONParser();
-
-                if (reading) {
-                    long startTime = threadMXBean.getCurrentThreadCpuTime();
-                    JSONArray array = (JSONArray) parser.parse(new FileReader(filePath));
-                    double executionTime = (threadMXBean.getCurrentThreadCpuTime() - startTime) / 1e6;
-                    int fileNumber = -1;
-                    for (int i = 0; i < 3; ++i)
-                        if (jsonFiles[i].equals(filePath))
-                            fileNumber = i;
-
-                    double[] time = new double[3];
-                    int[] count = new int[3];
-                    Scanner scanner = new Scanner(new File(statisticsFilepath));
-                    for (int i = 0; i < 3; ++i) {
-                        time[i] = scanner.nextDouble();
-                        count[i] = scanner.nextInt();
-                    }
-                    scanner.close();
-                    time[fileNumber] += executionTime;
-                    ++count[fileNumber];
-
-                    FileWriter fw = new FileWriter(statisticsFilepath);
-                    for (int i = 0; i < 3; ++i)
-                        fw.write(String.format("%.6f %d%n", time[i], count[i]));
-                    fw.close();
-
+                JSONArray array = (JSONArray) parser.parse(new FileReader(filePath));
+                if (reading)
                     System.out.printf("%s reads %s%n", getName(), filePath);
-                } else if (!container.isEmpty()) {
-                    JSONArray array = (JSONArray) parser.parse(new FileReader(filePath));
-
+                else if (!container.isEmpty()) {
                     // Remove all duplicate news from parsed container
                     for (Object record : array)
                         for (Object key : ((JSONObject) record).keySet())
@@ -104,6 +80,7 @@ public class MainClass {
             } catch (IOException | ParseException e) {
                 e.printStackTrace();
             }
+            executionTime = (threadMXBean.getCurrentThreadCpuTime() - startTime) / 1e6;
         }
     }
 
@@ -281,10 +258,10 @@ public class MainClass {
             // Executing planned actions
 
             ArrayList<MyThread> startedThreads = new ArrayList<>();
-            for (int j = 0; j < 3; ++j) {
-                MyThread thread = schedule.get(j).peek();
+            for (int fileNumber = 0; fileNumber < 3; ++fileNumber) {
+                MyThread thread = schedule.get(fileNumber).peek();
                 if (!thread.getName().equals(fourthThreadName)) {
-                    switch (j) {
+                    switch (fileNumber) {
                         case 0:
                             thread.setContainer(texts);
                             texts = new HashMap<>();
@@ -299,8 +276,27 @@ public class MainClass {
                     }
                 }
                 thread.start();
+                if (thread.getName().equals(fourthThreadName)) {
+                    double executionTime = thread.getExecutionTime();
+
+                    double[] time = new double[3];
+                    int[] count = new int[3];
+                    Scanner scanner = new Scanner(new File(statisticsFilepath));
+                    for (int j = 0; j < 3; ++j) {
+                        time[j] = scanner.nextDouble();
+                        count[j] = scanner.nextInt();
+                    }
+                    scanner.close();
+                    time[fileNumber] += executionTime;
+                    ++count[fileNumber];
+
+                    FileWriter fw = new FileWriter(statisticsFilepath);
+                    for (int j = 0; j < 3; ++j)
+                        fw.write(String.format("%.6f %d%n", time[j], count[j]));
+                    fw.close();
+                }
                 startedThreads.add(thread);
-                schedule.get(j).remove();
+                schedule.get(fileNumber).remove();
             }
             for (MyThread thread : startedThreads)
                 thread.join();
